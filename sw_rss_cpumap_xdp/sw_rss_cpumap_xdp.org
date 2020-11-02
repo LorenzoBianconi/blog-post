@@ -1,0 +1,198 @@
+#+Title: Sw Receive Side Scaling with eBPF and CPUMaps
+
+Abbreviations:
+- RSS = receive side scaling
+- RPS = Receive Packet Steering
+- XDP = eXpress Data Path
+
+* Introduction
+
+Modern Network Interface Cards (NIC) scale by having a hardware feature,
+named Receive Side Scaling (RSS), that based on a flow-hash spread incoming
+traffic across the RX irq-lines, which can be handled by different CPUs.
+Unfortunately there can be a number of situations where the NIC hardware RSS
+features fail, which result in delivering all packets to same RX IRQ-line
+and thus same CPU.
+
+This blogpost is about how to handle this situation in software, when RSS
+fails, with a strong focus on how to solve this *using XDP and CPU-map*
+redirect feature.
+
+* Existing software receive steering
+
+The Linux kernel already has a software feature called Receive Packet
+Steering (RPS) and Receive Flow Steering (RFS), which is logically a
+software implementation of RSS. This feature is both hard to configure ([1])
+and have limited scalability and performance.
+
+The performance issue is because RPS and RFS, happen too late in the
+kernels receive path, most importantly after the allocation of the "SKB"
+metadata kernel object that keeps track of the packet. Transferring and
+queuing these SKB-objects to a remote CPU is also a cross-CPU scalability
+bottleneck. That involves Inter Processor Communication calls and moving
+cache-lines between CPU. (Details: The kernels slab memory allocator is also
+challenged as the per-CPU slab caches loose their effect).
+
+* Faster software receive steering with XDP
+
+A faster and more scaleable software solution is using XDP to redirect
+raw-frames into a CPU-map. XDP is a kernel layer before the normal network
+stack. This means it runs before allocating the mentioned SKB object, and
+generally avoiding any per-packet memory allocations.
+
+* What are XDP actions?
+
+XDP runs an eBPF-program at the earliest possible point in the driver receive-path
+when DMA rx-ring is synced for the CPU.
+
+This eBPF-program parses the received frames and returns an action or verdict.
+The actions are:
+ 1) XDP_DROP - drop frame, which at driver level means recycle without alloc.
+ 2) XDP_PASS - let it pass for normal network stack handling.
+ 3) XDP_TX - Bounce packet out same interface.
+ 4) XDP_REDIRECT - the advanced action this blogpost focus on.
+
+Below is reported the Linux networking stack architecture, where we can notice the XDP
+eBPF hook at the bottom of the stack.
+
+[[file:images/XDP_arch.png]]
+
+** What makes XDP_REDIRECT special?
+
+The XDP_REDIRECT action is different, because it can queue XDP frame
+(xdp_frame) objects into a BPF-map. All the other actions need to take
+immediate action, because the (xdp_buff) data-structure that keeps track
+packet-data is not-allocated anywhere, it is simply a variable on the
+function call itself.
+
+It is essential for performance to avoid per-packet allocations. When
+XDP-redirecting the xdp_buff object is converted into a xdp_frame object to
+allow queuing this object. To avoid any memory allocations, the xdp_frame
+object is placed in the top headroom of the data-packet itself. (Details: A
+CPU prefetch operation, runs before the XDP BPF-prog, which hides the
+overhead of writing into this cache-line).
+
+The XDP BPF-prog returns action XDP_REDIRECT, but prior to this it have
+called one of these two BPF-helpers, to describe the redirect *destination*
+where the frame should be redirected to:
+
+- bpf_redirect(ifindex, flags)
+- bpf_redirect_map(bpf_map, index_key, flags)
+
+The first helper is simply choosing the Linux net device destination via the
+ifindex as key. The second helper is the big leap that allow us to extend
+XDP-redirect. This helper can redirect into a BPF-map with at a specific
+index_key. As we will explore in the next section, this flexibility can be
+used for CPU steering. The map-redirect is also responsible for creating a
+bulk effect (as drivers are required to call a xdp_flush operation when
+NAPI-poll budget ends).
+
+* Redirecting into a CPU-map
+
+The BPF-maps concept is a generic key-value store with different types. It
+is the main interface between a user-space application and a eBPF program
+running in the kernel. The concept seems simple, but also very flexible as
+it is up-to each individual BPF map-type to define the meaning of the key
+and value. As of this writing there are 28 different map types[2].
+
+For our use-case of software receive steering, the CPUMAP type
+(BPF_MAP_TYPE_CPUMAP).
+
+CPU maps are data structure developed to represent host cpu architecture.
+It is possible to define a map with as many entries as the number of cpus
+available in the system. Each CPU map entry has a dedicated kernel thread
+binded to the given cpu in order to represent the execution unit.
+
+#+begin_src C
+static int cpu_map_kthread_run(void *data) 
+{ 
+      /* do some work */ 
+} 
+ 
+int cpu_map_entry_alloc(int cpu, ...) 
+{ 
+      ... 
+      rcpu->kthread = kthread_create_on_node(cpu_map_kthread_run, ...); 
+      kthread_bind(rcpu->kthread, cpu); 
+      wake_up_process(rcpu->kthread); 
+      ... 
+} 
+#+end_src
+
+The XDP program attached to the NIC can "redirect" the received packets to a
+given entry in the CPU map in order to move the execution to the remote cpu
+associated to the map entry. The CPU map kthread will build the skb and
+forward it to the networking stack.
+
+#+begin_src C
+static int cpu_map_kthread_run(void *data)
+{
+      while (!kthread_should_stop()) {
+            ...
+            skb = cpu_map_build_skb();
+            /* forward to the network stack */
+            netif_receive_skb_core(skb);
+            ...
+      }
+}
+#+end_src
+
+*** Sw RSS with XDP and CPUMaps
+
+There are some multi-core devices available on the market (e.g. Marvell EspressoBin [3])
+that do not support RSS and all the interrupts generated by the NIC are managed by
+a single cpu (e.g. cpu0). However, using XDP and CPU maps is possible to implement a sw
+approximation of RSS. Starting from Linux kernel version 5.9 [4], CPU maps allow to attach
+an eBPF program to each entry in the map in order to XDP_TX, XDP_REDIRECT, XDP_DROP or
+XDP_PASS the received packet.
+
+#+begin_src C
+static int cpu_map_bpf_prog_run_xdp(void *data)
+{
+      ...
+      act = bpf_prog_run_xdp();
+      switch (act) {
+      case XDP_DROP:
+         ...
+      case XDP_PASS:
+         ...
+      case XDP_TX:
+         ...
+      case XDP_REDIRECT:
+         ...
+      }
+      ...
+}
+
+static int cpu_map_kthread_run(void *data) {
+      while (!kthread_should_stop()) {
+            ...
+            cpu_map_bpf_prog_run_xdp();
+            ...
+            skb = cpu_map_build_skb();
+            /* forward to the network stack */
+            netif_receive_skb_core(skb);
+            ...
+      } 
+}
+#+end_src
+
+Loading on the NIC a XDP program to redirect packets to CPU map entries, it is possible
+to balance the traffic on all available cpus, executing just few instructions on the core
+connected to the NIC irq-line. The eBPF program running on CPU map entries will implement
+the logic to redirect the traffic to a remote interface or forward it to the networking stack.
+Below is reported the system architecture run on the EspressoBin (mvneta).
+We can notice most of the code is executed on the CPU map entry associated to cpu1
+
+[[file:images/cpumap-test-arch.png]]
+
+*** Future development
+In order to fill the gap with the "skb" scenario, we need to extend CPU maps (and in general XDP)
+with JUMBO frames support and leverage on GRO code-path available in the networking stack.
+No worries, we are already working on it!!
+
+*** Additional Resources
+- [1] Sw Receive Side Scaling with eBPF and CPUMaps
+- [2] https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130
+- [3] http://espressobin.net/">http://espressobin.net/
+- [4] https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702">https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702
