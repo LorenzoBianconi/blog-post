@@ -95,13 +95,30 @@ running in the kernel. The concept seems simple, but also very flexible as
 it is up-to each individual BPF map-type to define the meaning of the key
 and value. As of this writing there are 28 different map types[2].
 
-For our use-case of software receive steering, the CPUMAP type
-(BPF_MAP_TYPE_CPUMAP).
+For our use-case of software Receive Side Scaling (RSS) with XDP, the CPUMAP
+type (BPF_MAP_TYPE_CPUMAP) is just what we need. The CPUMAP represents the
+CPUs in the system (zero) indexed as the map-key, and the map-value is the
+config settings (for this CPU). Each CPUMAP entry has a dedicated kernel
+thread bound to the given CPU in order to represent the remote-CPU execution
+unit. (Hint: more about how we extended the map-value for adding new
+features later in blogpost).
 
-CPU maps are data structure developed to represent host cpu architecture.
-It is possible to define a map with as many entries as the number of cpus
-available in the system. Each CPU map entry has a dedicated kernel thread
-binded to the given cpu in order to represent the execution unit.
+We promised a faster solution with XDP, which is only possible due to the
+careful design and bulking details happening internally in CPUMAP. This is
+described in below section, which can be skipped based on readers interests.
+
+** Details: Efficient transfer between CPUs
+
+The CPUMAP entry
+represents a Multi-Producer Single-Consumer (MPSC) queue (implemented via
+kernel provided ptr_ring). The Single-Consumer is the kthread that can
+access the (ptr_ring) queue lockless. It also tries to bulk dequeue 8
+xdp-frame objects as this represent one cache-line. The Multi-Producers can
+be simultaneous with RX IRQ-line CPUs queuing up packets for the remote-CPU.
+To avoid queue lock-contention there is (per map-entry) a small 8 object
+per-CPU allocated store for producer CPUs to generate bulk enqueue into the
+cross-CPU queue. This careful queue usage means that each cache-line moving
+cross-CPU transfer 8 frames.
 
 #+begin_src C
 static int cpu_map_kthread_run(void *data) 
