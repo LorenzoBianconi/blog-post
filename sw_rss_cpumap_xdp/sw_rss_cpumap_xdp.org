@@ -7,7 +7,7 @@ Abbreviations:
 
 * Introduction
 
-Modern Network Interface Cards (NIC) scale by having a hardware feature,
+Modern Network Interface Cards (NICs) scale by having a hardware feature,
 named Receive Side Scaling (RSS), that based on a flow-hash spread incoming
 traffic across the RX irq-lines, which can be handled by different CPUs.
 Unfortunately there can be a number of situations where the NIC hardware RSS
@@ -22,15 +22,15 @@ redirect feature.
 
 The Linux kernel already has a software feature called Receive Packet
 Steering (RPS) and Receive Flow Steering (RFS), which is logically a
-software implementation of RSS. This feature is both hard to configure ([1])
-and have limited scalability and performance.
+software implementation of RSS. This feature is both hard to configure [1]
+and has limited scalability and performance.
 
 The performance issue is because RPS and RFS, happen too late in the
 kernels receive path, most importantly after the allocation of the "SKB"
 metadata kernel object that keeps track of the packet. Transferring and
 queuing these SKB-objects to a remote CPU is also a cross-CPU scalability
-bottleneck. That involves Inter Processor Communication calls and moving
-cache-lines between CPU. (Details: The kernels slab memory allocator is also
+bottleneck that involves Inter Processor Communication calls and moving
+cache-lines between CPUs. (Details: The kernels slab memory allocator is also
 challenged as the per-CPU slab caches loose their effect).
 
 * Faster software receive steering with XDP
@@ -192,7 +192,7 @@ with JUMBO frames support and leverage on GRO code-path available in the network
 No worries, we are already working on it!!
 
 *** Additional Resources
-- [1] Sw Receive Side Scaling with eBPF and CPUMaps
+- [1] https://www.kernel.org/doc/html/latest/networking/scaling.html
 - [2] https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130
-- [3] http://espressobin.net/">http://espressobin.net/
+- [3] http://espressobin.net/
 - [4] https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702">https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702
