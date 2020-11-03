@@ -71,16 +71,22 @@ The XDP BPF-prog returns action XDP_REDIRECT, but prior to this it have
 called one of these two BPF-helpers, to describe the redirect *destination*
 where the frame should be redirected to:
 
-- bpf_redirect(ifindex, flags)
-- bpf_redirect_map(bpf_map, index_key, flags)
+- =bpf_redirect(ifindex, flags)=
+- =bpf_redirect_map(bpf_map, index_key, flags)=
 
 The first helper is simply choosing the Linux net device destination via the
 ifindex as key. The second helper is the big leap that allow us to extend
 XDP-redirect. This helper can redirect into a BPF-map with at a specific
 index_key. As we will explore in the next section, this flexibility can be
-used for CPU steering. The map-redirect is also responsible for creating a
-bulk effect (as drivers are required to call a xdp_flush operation when
-NAPI-poll budget ends).
+used for CPU steering. As can be seen in the architecture picture, =AF_XDP=
+is also implemented via =bpf_redirect_map=.
+
+The ability to bulk is important for performance. The map-redirect is
+responsible for creating a bulk effect, as drivers are required to call a
+xdp_flush operation when NAPI-poll budget ends. The design allows the
+individual map-type implementation to control the level of bulking. More
+details later on how this is used to mitigate the overhead of cross-CPU
+communication.
 
 * Redirecting into a CPU-map
 
