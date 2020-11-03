@@ -1,10 +1,5 @@
 #+Title: Sw Receive Side Scaling with eBPF and CPUMaps
 
-Abbreviations:
-- RSS = receive side scaling
-- RPS = Receive Packet Steering
-- XDP = eXpress Data Path
-
 * Introduction
 
 Modern Network Interface Cards (NICs) scale by having a hardware feature,
@@ -213,3 +208,11 @@ No worries, we are already working on it!!
 - [2] https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130
 - [3] http://espressobin.net/
 - [4] https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702">https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702
+
+* Acronyms
+
+Acronyms or Abbreviations:
+- RSS = Receive Side Scaling
+- RPS = Receive Packet Steering
+- RFS = Receive Flow Steering
+- XDP = eXpress Data Path
