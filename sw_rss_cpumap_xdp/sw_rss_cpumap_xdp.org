@@ -136,11 +136,17 @@ small 8 object per-CPU allocated store for producer CPUs to generate bulk
 enqueue into the cross-CPU queue. This careful queue usage means that each
 cache-line moving cross-CPU transfer 8 frames.
 
+** Moving raw-frames to remote-CPUs
 
-The XDP program attached to the NIC can "redirect" the received packets to a
-given entry in the CPU map in order to move the execution to the remote cpu
-associated to the map entry. The CPU map kthread will build the skb and
-forward it to the networking stack.
+The XDP eBPF-program attached to the NIC drivers RX-queue (connected to the
+IRQ-line), will be the initial CPU that sees the packet. On this CPU the
+BPF-prog should use as few CPU cycles as possible, to determine the
+remote-CPU target, in-order to make this scale. This RX-CPU "redirect" the
+received raw-packets to a given entry in the CPU map in order to move the
+execution to the remote CPU associated to the map entry.
+
+The remote-CPU map kthread will allocate and build the skb and forward it to
+the networking stack.
 
 #+begin_src C
 static int cpu_map_kthread_run(void *data)
