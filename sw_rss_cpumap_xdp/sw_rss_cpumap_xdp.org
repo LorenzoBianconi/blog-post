@@ -104,6 +104,22 @@ kernel thread bound to the given CPU in order to represent the remote-CPU
 execution unit. (Hint: more about how we extended the map-value for adding
 new features later in blogpost).
 
+#+begin_src C
+static int cpu_map_kthread_run(void *data) 
+{ 
+      /* do some work */ 
+} 
+ 
+int cpu_map_entry_alloc(int cpu, ...) 
+{ 
+      ... 
+      rcpu->kthread = kthread_create_on_node(cpu_map_kthread_run, ...); 
+      kthread_bind(rcpu->kthread, cpu); 
+      wake_up_process(rcpu->kthread); 
+      ... 
+} 
+#+end_src
+
 We promised a faster solution with XDP, which is only possible due to the
 careful design and bulking details happening internally in CPUMAP. This is
 described in below section, which can be skipped based on readers interests.
@@ -120,21 +136,6 @@ small 8 object per-CPU allocated store for producer CPUs to generate bulk
 enqueue into the cross-CPU queue. This careful queue usage means that each
 cache-line moving cross-CPU transfer 8 frames.
 
-#+begin_src C
-static int cpu_map_kthread_run(void *data) 
-{ 
-      /* do some work */ 
-} 
- 
-int cpu_map_entry_alloc(int cpu, ...) 
-{ 
-      ... 
-      rcpu->kthread = kthread_create_on_node(cpu_map_kthread_run, ...); 
-      kthread_bind(rcpu->kthread, cpu); 
-      wake_up_process(rcpu->kthread); 
-      ... 
-} 
-#+end_src
 
 The XDP program attached to the NIC can "redirect" the received packets to a
 given entry in the CPU map in order to move the execution to the remote cpu
