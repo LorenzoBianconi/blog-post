@@ -94,7 +94,7 @@ The BPF-maps concept is a generic key-value store with different types. It
 is the main interface between a user-space application and a eBPF program
 running in the kernel. The concept seems simple, but also very flexible as
 it is up-to each individual BPF map-type to define the meaning of the key
-and value. As of this writing there are 28 different map types[2].
+and value. As of this writing there are 28 different map types[[[https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130][2]]].
 
 For our use-case of software Receive Side Scaling (RSS) with XDP, the CPUMAP
 type (BPF_MAP_TYPE_CPUMAP) is just what we need. The CPUMAP represents the
@@ -209,7 +209,7 @@ In order to fill the gap with the "skb" scenario, we need to extend CPU maps (an
 with JUMBO frames support and leverage on GRO code-path available in the networking stack.
 No worries, we are already working on it!!
 
-*** Additional Resources
+* Additional Resources
 - [1] https://www.kernel.org/doc/html/latest/networking/scaling.html
 - [2] https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130
 - [3] http://espressobin.net/
