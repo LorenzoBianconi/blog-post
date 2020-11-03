@@ -110,16 +110,15 @@ described in below section, which can be skipped based on readers interests.
 
 ** Details: Efficient transfer between CPUs
 
-The CPUMAP entry
-represents a Multi-Producer Single-Consumer (MPSC) queue (implemented via
-kernel provided ptr_ring). The Single-Consumer is the kthread that can
-access the (ptr_ring) queue lockless. It also tries to bulk dequeue 8
-xdp-frame objects as this represent one cache-line. The Multi-Producer's can
-be RX IRQ-line CPUs queuing up packets simultaneous for the remote-CPU. To
-avoid queue lock-contention there is (per map-entry) a small 8 object
-per-CPU allocated store for producer CPUs to generate bulk enqueue into the
-cross-CPU queue. This careful queue usage means that each cache-line moving
-cross-CPU transfer 8 frames.
+The CPUMAP entry represents a Multi-Producer Single-Consumer (MPSC) queue
+(implemented via kernel provided ptr_ring). The Single-Consumer is the
+kthread that can access the (ptr_ring) queue lockless. It also tries to bulk
+dequeue 8 xdp-frame objects as this represent one cache-line. The
+Multi-Producer's can be RX IRQ-line CPUs queuing up packets simultaneous for
+the remote-CPU. To avoid queue lock-contention there is (per map-entry) a
+small 8 object per-CPU allocated store for producer CPUs to generate bulk
+enqueue into the cross-CPU queue. This careful queue usage means that each
+cache-line moving cross-CPU transfer 8 frames.
 
 #+begin_src C
 static int cpu_map_kthread_run(void *data) 
