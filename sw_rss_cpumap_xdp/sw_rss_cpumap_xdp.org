@@ -177,6 +177,9 @@ checksum have to be recalculated. When network stack need to access/use the
 hash value (see =skb_get_hash()=) it triggers a software recalculation of
 the hash.
 
+Currently CPUMAP don't call into the GRO system, that boost the TCP
+throughput by creating an SKB that points to several TCP data-segments.
+This is left as future work.
 
 *** Sw RSS with XDP and CPUMaps
 
@@ -227,10 +230,14 @@ We can notice most of the code is executed on the CPU map entry associated to cp
 
 [[file:images/cpumap-test-arch.png]]
 
-*** Future development
-In order to fill the gap with the "skb" scenario, we need to extend CPU maps (and in general XDP)
-with JUMBO frames support and leverage on GRO code-path available in the networking stack.
-No worries, we are already working on it!!
+
+* Future development
+
+In order to fill the gap with the "skb" scenario, we need to extend CPU maps
+(and in general XDP) with JUMBO frames support and leverage on GRO code-path
+available in the networking stack. No worries, we are already working on
+it!!
+
 
 * Additional Resources
 - [1] https://www.kernel.org/doc/html/latest/networking/scaling.html
