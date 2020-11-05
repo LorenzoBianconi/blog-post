@@ -181,13 +181,13 @@ Currently CPUMAP don't call into the GRO system, that boost the TCP
 throughput by creating an SKB that points to several TCP data-segments.
 This is left as future work.
 
-* New CPUMAP feature: Run XDP on remote CPU0
+* New CPUMAP feature: Run XDP on remote CPU
 
 Starting from Linux kernel version 5.9 [4] (and soon in RHEL8) the CPUMAP
-can run a new XDP program on the remote-CPU.
-
-CPU maps allow to attach an eBPF program to each entry in the map in order
-to XDP_TX, XDP_REDIRECT, XDP_DROP or XDP_PASS the received packet.
+can run a new (2nd) XDP program on the remote-CPU. This helps scalability as
+the RX-CPU should spend as few cycles as possible per packet. Then the
+remote-CPU that is scaled out to, can afford spend more cycles e.g. to look
+deeper into packet headers.
 
 #+begin_src C
 static int cpu_map_bpf_prog_run_xdp(void *data)
@@ -216,8 +216,27 @@ static int cpu_map_kthread_run(void *data) {
             /* forward to the network stack */
             netif_receive_skb_core(skb);
             ...
-      } 
+      }
 }
+#+end_src
+
+This 2nd per remote-CPU XDP program is attached by inserting the eBPF
+program (file-descriptor) on a map-entry level. This was achieved by
+extending the map-value, now defined as UAPI via =struct bpf_cpumap_val=:
+
+#+begin_src C
+/* CPUMAP map-value layout
+ *
+ * The struct data-layout of map-value is a configuration interface.
+ * New members can only be added to the end of this structure.
+ */
+struct bpf_cpumap_val {
+	__u32 qsize;	/* queue size to remote target CPU */
+	union {
+		int   fd;	/* prog fd on map write */
+		__u32 id;	/* prog id on map read */
+	} bpf_prog;
+};
 #+end_src
 
 * Practical use-cases
