@@ -259,6 +259,24 @@ We can notice most of the code is executed on the CPU map entry associated to cp
 
 [[file:images/cpumap-test-arch.png]]
 
+** Issue wrong RSS with Q-in-Q
+
+When the NIC hardware parser doesn't recognise a protocol, then it cannot
+calculate a proper RX-hash and there by it cannot do proper RSS across the
+available RX-queues in the hardware (which is bound to IRQ-lines).
+
+This is true for new protocols and encapsulations that gets developed after
+the hardware NIC was released. This was very visible when VXLAN was first
+introduced. To some extend NICs can be firmware upgrade to support new
+protocols.
+
+You would expect NICs to work well with the old and common VLAN (IEEE
+802.1Q) protocol standard. They do, except that multiple or stacked VLANs
+seems to break on many common NICs. The standard is called IEEE 802.1ad and
+informally known as Q-in-Q (incorporated into 802.1Q in 2011).
+
+Practical Q-in-Q RSS issues have been seen with NIC driver ixgbe and i40e.
+
 
 * Future development
 
