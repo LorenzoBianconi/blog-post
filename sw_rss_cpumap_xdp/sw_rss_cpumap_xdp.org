@@ -1,4 +1,22 @@
-#+Title: Sw Receive Side Scaling with eBPF and CPUMaps
+#+Title: Receive Side Scaling with eBPF and CPUMAP
+
+* Generated index (not for official Red Hat blog-post)                  :toc:
+- [[#introduction][Introduction]]
+- [[#existing-software-receive-steering][Existing software receive steering]]
+- [[#faster-software-receive-steering-with-xdp][Faster software receive steering with XDP]]
+- [[#what-are-xdp-actions][What are XDP actions?]]
+  - [[#what-makes-xdp_redirect-special][What makes XDP_REDIRECT special?]]
+- [[#redirecting-into-a-cpu-map][Redirecting into a CPU-map]]
+  - [[#details-efficient-transfer-between-cpus][Details: Efficient transfer between CPUs]]
+  - [[#moving-raw-frames-to-remote-cpus][Moving raw-frames to remote-CPUs]]
+  - [[#pitfall-remote-cpu-skb-creation-lacking-info][Pitfall: Remote-CPU SKB creation lacking info]]
+- [[#new-cpumap-feature-run-xdp-on-remote-cpu][New CPUMAP feature: Run XDP on remote CPU]]
+- [[#practical-use-cases][Practical use-cases]]
+  - [[#issue-on-low-end-hardware][Issue on low-end hardware]]
+  - [[#issue-wrong-rss-with-q-in-q][Issue wrong RSS with Q-in-Q]]
+- [[#future-development][Future development]]
+- [[#additional-resources][Additional Resources]]
+- [[#acronyms][Acronyms]]
 
 * Introduction
 
