@@ -145,7 +145,8 @@ remote-CPU target, in-order to make this scale. This RX-CPU "redirect" the
 received raw-packets to a given entry in the CPU map in order to move the
 execution to the remote CPU associated to the map entry.
 
-The remote-CPU map kthread will allocate and build the skb and forward it to
+The remote-CPU map kthread will receive raw =xdp_frame= objects. Thus, the
+SKB object allocation happens on the remote-CPU, and it is passed into to
 the networking stack.
 
 #+begin_src C
@@ -160,6 +161,22 @@ static int cpu_map_kthread_run(void *data)
       }
 }
 #+end_src
+
+** Pitfall: Remote-CPU SKB creation lacking info
+
+When creating an SKB based on the xdp_frame object, some optional SKB fields
+are not updates. This is because these fields comes from the NIC hardware
+RX-descriptor and on the remote-CPU this RX-descriptor is no-longer
+available. The two most common hardware "partial-offload" information
+missing is (1) HW RX-checksum info (=skb->ip_summed= + =skb->csum=), and (2)
+HW RX-hash. Less commonly used (and also missing) is VLAN, RX-timestamping
+and mark value.
+
+The missing RX-checksum cause a slowdown when transmitting the SKB as the
+checksum have to be recalculated. When network stack need to access/use the
+hash value (see =skb_get_hash()=) it triggers a software recalculation of
+the hash.
+
 
 *** Sw RSS with XDP and CPUMaps
 
