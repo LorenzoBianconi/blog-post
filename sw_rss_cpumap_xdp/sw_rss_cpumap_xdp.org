@@ -35,7 +35,7 @@ Previously, if the hardware features did not match the deployment use case,
 there was no good way to fix it; but with XDP we have a high-performance
 programmable hook that makes it possible, so we are no longer limited
 by the hardware features. This blogpost is about how to handle this situation
-in software, when RSS is insufficient, with a strong focus on how to solve this
+in software, with a strong focus on how to solve this issue
 *using XDP and the CPU-map* redirect feature.
 
 * Faster software receive steering with XDP
@@ -55,7 +55,7 @@ XDP runs an eBPF-program at the earliest possible point in the driver receive-pa
 when DMA rx-ring is synced for the CPU.
 
 This eBPF-program parses the received frames and returns an action or *verdict*.
-The verdicts are:
+Possible verdicts are:
  1) XDP_DROP - drop the frame, which at driver level means recycle without alloc.
  2) XDP_PASS - let it pass for normal network stack handling.
  3) XDP_TX - bounce the frame out same interface.
@@ -106,7 +106,7 @@ skipped based on readers interests.
 
 ** Moving raw-frames to remote-CPUs
 
-The packet will be received on the CPU which the IRQ of the NIC RX queue
+The packet is received on the CPU which the IRQ of the NIC RX queue
 is steered to. This CPU will be the one that initially sees the packet,
 and this is where the XDP program will be executed. Because the objective
 is to scale the CPU usage across multiple CPUs, the eBPF program should
@@ -250,8 +250,8 @@ cache-lines between CPUs. (Details: The kernels slab memory allocator is also
 challenged as the per-CPU slab caches loose their effect).
 ** Issue wrong RSS with Q-in-Q
 
-When the NIC hardware parser doesn't recognise a protocol, then it cannot
-calculate a proper RX-hash and there by it cannot do proper RSS across the
+When the NIC hardware parser doesn't recognise a protocol, it cannot
+calculate a proper RX-hash and then it cannot do proper RSS across the
 available RX-queues in the hardware (which is bound to IRQ-lines).
 
 This is true for new protocols and encapsulations that gets developed after
