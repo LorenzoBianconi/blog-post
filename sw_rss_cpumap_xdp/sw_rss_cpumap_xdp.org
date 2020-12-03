@@ -1,125 +1,86 @@
 #+Title: Receive Side Scaling with eBPF and CPUMAP
 
-* Generated index (not for official Red Hat blog-post)                  :toc:
+* Generated index (not for official Red Hat blog-post)			:toc:
 - [[#introduction][Introduction]]
-- [[#existing-software-receive-steering][Existing software receive steering]]
 - [[#faster-software-receive-steering-with-xdp][Faster software receive steering with XDP]]
-- [[#what-are-xdp-actions][What are XDP actions?]]
-  - [[#what-makes-xdp_redirect-special][What makes XDP_REDIRECT special?]]
+- [[#what-is-xdp][What is XDP?]]
 - [[#redirecting-into-a-cpu-map][Redirecting into a CPU-map]]
-  - [[#details-efficient-transfer-between-cpus][Details: Efficient transfer between CPUs]]
   - [[#moving-raw-frames-to-remote-cpus][Moving raw-frames to remote-CPUs]]
   - [[#pitfall-remote-cpu-skb-creation-lacking-info][Pitfall: Remote-CPU SKB creation lacking info]]
 - [[#new-cpumap-feature-run-xdp-on-remote-cpu][New CPUMAP feature: Run XDP on remote CPU]]
-- [[#practical-use-cases][Practical use-cases]]
-  - [[#issue-on-low-end-hardware][Issue on low-end hardware]]
-  - [[#issue-wrong-rss-with-q-in-q][Issue wrong RSS with Q-in-Q]]
+- [[#practical-use-case-issue-on-low-end-hardware][Practical use case: issue on low end hardware]]
 - [[#future-development][Future development]]
+- [[#Details][Details]]
+  - [[#existing-software-receive-steering][Existing software receive steering]]
+  - [[#issue-wrong-rss-with-q-in-q][Issue wrong RSS with Q-in-Q]]
+  - [[#what-makes-xdp_redirect-special][What makes XDP_REDIRECT special?]]
+  - [[#efficient-transfer-between-CPUs][Efficient transfer between CPUs]]
 - [[#additional-resources][Additional Resources]]
 - [[#acronyms][Acronyms]]
 
 * Introduction
 
-Modern Network Interface Cards (NICs) scale by having a hardware feature,
-named Receive Side Scaling (RSS), that based on a flow-hash spread incoming
-traffic across the RX irq-lines, which can be handled by different CPUs.
-Unfortunately there can be a number of situations where the NIC hardware RSS
-features fail, which result in delivering all packets to same RX IRQ-line
-and thus same CPU.
+High-speed network packet processing presents a challenging performance
+problem on servers. Modern Network Interface Cards (NICs) can process
+packets at a much higher rate than the host can keep up with on a single
+CPU. So to scale the processing on the host, the Linux kernel relies on a
+hardware feature named Receive Side Scaling (RSS), that based on a flow-hash
+spreads incoming traffic across the RX IRQ-lines, which can be handled by
+different CPUs. Unfortunately there can be a number of situations where
+the NIC hardware RSS features fail (e.g. if the received traffic is not
+supported by the NIC RSS engine) or the RSS can be not supported by the NIC,
+which result in delivering all packets to same RX IRQ-line and thus same CPU.
 
-This blogpost is about how to handle this situation in software, when RSS
-fails, with a strong focus on how to solve this *using XDP and CPU-map*
-redirect feature.
-
-* Existing software receive steering
-
-The Linux kernel already has a software feature called Receive Packet
-Steering (RPS) and Receive Flow Steering (RFS), which is logically a
-software implementation of RSS. This feature is both hard to configure [1]
-and has limited scalability and performance.
-
-The performance issue is because RPS and RFS, happen too late in the
-kernels receive path, most importantly after the allocation of the "SKB"
-metadata kernel object that keeps track of the packet. Transferring and
-queuing these SKB-objects to a remote CPU is also a cross-CPU scalability
-bottleneck that involves Inter Processor Communication calls and moving
-cache-lines between CPUs. (Details: The kernels slab memory allocator is also
-challenged as the per-CPU slab caches loose their effect).
+Previously, if the hardware features did not match the deployment use case,
+there was no good way to fix it; but with XDP we have a high-performance
+programmable hook that makes it possible, so we are no longer limited
+by the hardware features. This blogpost is about how to handle this situation
+in software, when RSS is insufficient, with a strong focus on how to solve this
+*using XDP and the CPU-map* redirect feature.
 
 * Faster software receive steering with XDP
 
+The kernel already has some software implementations of hw RSS called
+Receive Packet Steering (RPS) and Receive Flow Steering (RFS), but
+unfortunately they do not perform well enough to be a replacement
+for hardware RSS.
 A faster and more scaleable software solution is using XDP to redirect
 raw-frames into a CPU-map. XDP is a kernel layer before the normal network
-stack. This means it runs before allocating the mentioned SKB object, and
-generally avoiding any per-packet memory allocations.
+stack. This means it runs before allocating the SKB object, and generally
+avoiding any per-packet memory allocations.
 
-* What are XDP actions?
+* What is XDP?
 
 XDP runs an eBPF-program at the earliest possible point in the driver receive-path
 when DMA rx-ring is synced for the CPU.
 
-This eBPF-program parses the received frames and returns an action or verdict.
-The actions are:
- 1) XDP_DROP - drop frame, which at driver level means recycle without alloc.
+This eBPF-program parses the received frames and returns an action or *verdict*.
+The verdicts are:
+ 1) XDP_DROP - drop the frame, which at driver level means recycle without alloc.
  2) XDP_PASS - let it pass for normal network stack handling.
- 3) XDP_TX - Bounce packet out same interface.
+ 3) XDP_TX - bounce the frame out same interface.
  4) XDP_REDIRECT - the advanced action this blogpost focus on.
 
-Below is reported the Linux networking stack architecture, where we can notice the XDP
-eBPF hook at the bottom of the stack.
+The figure below shows the XDP architecture and how XDP interacts with the Linux
+networking stack.
 
 [[file:images/XDP_arch.png]]
 
-** What makes XDP_REDIRECT special?
-
-The XDP_REDIRECT action is different, because it can queue XDP frame
-(xdp_frame) objects into a BPF-map. All the other actions need to take
-immediate action, because the (xdp_buff) data-structure that keeps track
-packet-data is not-allocated anywhere, it is simply a variable on the
-function call itself.
-
-It is essential for performance to avoid per-packet allocations. When
-XDP-redirecting the xdp_buff object is converted into a xdp_frame object to
-allow queuing this object. To avoid any memory allocations, the xdp_frame
-object is placed in the top headroom of the data-packet itself. (Details: A
-CPU prefetch operation, runs before the XDP BPF-prog, which hides the
-overhead of writing into this cache-line).
-
-The XDP BPF-prog returns action XDP_REDIRECT, but prior to this it have
-called one of these two BPF-helpers, to describe the redirect *destination*
-where the frame should be redirected to:
-
-- =bpf_redirect(ifindex, flags)=
-- =bpf_redirect_map(bpf_map, index_key, flags)=
-
-The first helper is simply choosing the Linux net device destination via the
-ifindex as key. The second helper is the big leap that allow us to extend
-XDP-redirect. This helper can redirect into a BPF-map with at a specific
-index_key. As we will explore in the next section, this flexibility can be
-used for CPU steering. As can be seen in the architecture picture, =AF_XDP=
-is also implemented via =bpf_redirect_map=.
-
-The ability to bulk is important for performance. The map-redirect is
-responsible for creating a bulk effect, as drivers are required to call a
-xdp_flush operation when NAPI-poll budget ends. The design allows the
-individual map-type implementation to control the level of bulking. More
-details later on how this is used to mitigate the overhead of cross-CPU
-communication.
-
 * Redirecting into a CPU-map
 
-The BPF-maps concept is a generic key-value store with different types. It
-is the main interface between a user-space application and a eBPF program
-running in the kernel. The concept seems simple, but also very flexible as
-it is up-to each individual BPF map-type to define the meaning of the key
-and value. As of this writing there are 28 different map types[[[https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130][2]]].
+BPF maps are generic key-value stores and can have different data types.
+They are used both as an interface between a user-space application and
+an eBPF program running in the kernel, and as a way to pass information
+to kernel helpers. As of this writing there are 28 different map types [1].
 
 For our use-case of software Receive Side Scaling (RSS) with XDP, the CPUMAP
 type (BPF_MAP_TYPE_CPUMAP) is just what we need. The CPUMAP represents the
 CPUs in the system (zero) indexed as the map-key, and the map-value is the
 config settings (per CPU map entry). Each CPUMAP entry has a dedicated
 kernel thread bound to the given CPU in order to represent the remote-CPU
-execution unit. (Hint: more about how we extended the map-value for adding
+execution unit. Below we reported the pseudo code associated to the allocation
+of a CPUMAP entry and the related kernel thread.
+(Hint: more about how we extended the map-value for adding
 new features later in blogpost).
 
 #+begin_src C
@@ -140,32 +101,23 @@ int cpu_map_entry_alloc(int cpu, ...)
 
 We promised a faster solution with XDP, which is only possible due to the
 careful design and bulking details happening internally in CPUMAP. This is
-described in below section, which can be skipped based on readers interests.
-
-** Details: Efficient transfer between CPUs
-
-The CPUMAP entry represents a Multi-Producer Single-Consumer (MPSC) queue
-(implemented via kernel provided ptr_ring). The Single-Consumer is the
-kthread that can access the (ptr_ring) queue lockless. It also tries to bulk
-dequeue 8 xdp-frame objects as this represent one cache-line. The
-Multi-Producer's can be RX IRQ-line CPUs queuing up packets simultaneous for
-the remote-CPU. To avoid queue lock-contention there is (per map-entry) a
-small 8 object per-CPU allocated store for producer CPUs to generate bulk
-enqueue into the cross-CPU queue. This careful queue usage means that each
-cache-line moving cross-CPU transfer 8 frames.
+described at the end of the blogpost in "Details" section, which can be
+skipped based on readers interests.
 
 ** Moving raw-frames to remote-CPUs
 
-The XDP eBPF-program attached to the NIC drivers RX-queue (connected to the
-IRQ-line), will be the initial CPU that sees the packet. On this CPU the
-BPF-prog should use as few CPU cycles as possible, to determine the
-remote-CPU target, in-order to make this scale. This RX-CPU "redirect" the
-received raw-packets to a given entry in the CPU map in order to move the
-execution to the remote CPU associated to the map entry.
+The packet will be received on the CPU which the IRQ of the NIC RX queue
+is steered to. This CPU will be the one that initially sees the packet,
+and this is where the XDP program will be executed. Because the objective
+is to scale the CPU usage across multiple CPUs, the eBPF program should
+use as few cycles as possible on this initial CPU: just enough to determine
+which remote CPU to send the packet to and then use the redirect eBPF helper
+with a CPUMAP, to move the packet to a remote CPU for continued processing.
 
 The remote-CPU map kthread will receive raw =xdp_frame= objects. Thus, the
 SKB object allocation happens on the remote-CPU, and it is passed into to
-the networking stack.
+the networking stack. Below we extended the kthread pseudo code to clarify
+SKB allocation and how SKBs are forwarded to the Linux networking stack.
 
 #+begin_src C
 static int cpu_map_kthread_run(void *data)
@@ -183,29 +135,26 @@ static int cpu_map_kthread_run(void *data)
 ** Pitfall: Remote-CPU SKB creation lacking info
 
 When creating an SKB based on the xdp_frame object, some optional SKB fields
-are not updates. This is because these fields comes from the NIC hardware
+are not populated. This is because these fields come from the NIC hardware
 RX-descriptor and on the remote-CPU this RX-descriptor is no-longer
 available. The two most common hardware "partial-offload" information
-missing is (1) HW RX-checksum info (=skb->ip_summed= + =skb->csum=), and (2)
-HW RX-hash. Less commonly used (and also missing) is VLAN, RX-timestamping
+missing are (1) HW RX-checksum info (=skb->ip_summed= + =skb->csum=), and (2)
+HW RX-hash. Less commonly used (and also missing) are VLAN, RX-timestamping
 and mark value.
 
 The missing RX-checksum cause a slowdown when transmitting the SKB as the
-checksum have to be recalculated. When network stack need to access/use the
+checksum has to be recalculated. When network stack needs to access/use the
 hash value (see =skb_get_hash()=) it triggers a software recalculation of
 the hash.
 
-Currently CPUMAP don't call into the GRO system, that boost the TCP
-throughput by creating an SKB that points to several TCP data-segments.
-This is left as future work.
-
 * New CPUMAP feature: Run XDP on remote CPU
 
-Starting from Linux kernel version 5.9 [4] (and soon in RHEL8) the CPUMAP
+Starting from Linux kernel version 5.9 [2] (and soon in RHEL8) the CPUMAP
 can run a new (2nd) XDP program on the remote-CPU. This helps scalability as
 the RX-CPU should spend as few cycles as possible per packet. Then the
 remote-CPU that is scaled out to, can afford spend more cycles e.g. to look
-deeper into packet headers.
+deeper into packet headers. Below we reported the new pseudo code executed
+when the eBPF program associated to the CPUMAP entry is run.
 
 #+begin_src C
 static int cpu_map_bpf_prog_run_xdp(void *data)
@@ -257,26 +206,48 @@ struct bpf_cpumap_val {
 };
 #+end_src
 
-* Practical use-cases
-
-** Issue on low-end hardware
+* Practical use case: issue on low end hardware
 
 There are some multi-core devices available on the market (e.g. Marvell
 EspressoBin [3]) that do not support RSS and all the interrupts generated by
-the NIC are managed by a single cpu (e.g. cpu0)
+the NIC are managed by a single CPU (e.g. CPU0)
 
 However, using XDP and CPU maps is possible to implement a software
 approximation of RSS.
 
 Loading on the NIC a XDP program to redirect packets to CPU map entries, it is possible
-to balance the traffic on all available cpus, executing just few instructions on the core
-connected to the NIC irq-line. The eBPF program running on CPU map entries will implement
+to balance the traffic on all available CPUs, executing just few instructions on the core
+connected to the NIC IRQ-line. The eBPF program running on CPU map entries will implement
 the logic to redirect the traffic to a remote interface or forward it to the networking stack.
 Below is reported the system architecture run on the EspressoBin (mvneta).
-We can notice most of the code is executed on the CPU map entry associated to cpu1
+We can notice most of the code is executed on the CPU map entry associated to CPU1
 
 [[file:images/cpumap-test-arch.png]]
 
+* Future development
+
+Currently CPUMAP doesn't call into the GRO system, that boosts the TCP
+throughput by creating an SKB that points to several TCP data-segments.
+In order to fill the gap with the "skb" scenario, we need to extend CPU maps
+(and in general XDP) with JUMBO frames support and leverage on GRO code-path
+available in the networking stack. No worries, we are already working on it!!
+
+* Details
+
+** Existing software receive steering
+
+The Linux kernel already has a software feature called Receive Packet
+Steering (RPS) and Receive Flow Steering (RFS), which is logically a
+software implementation of RSS. This feature is both hard to configure [4]
+and has limited scalability and performance.
+
+The performance issue is because RPS and RFS, happen too late in the
+kernels receive path, most importantly after the allocation of the "SKB"
+metadata kernel object that keeps track of the packet. Transferring and
+queuing these SKB-objects to a remote CPU is also a cross-CPU scalability
+bottleneck that involves Inter Processor Communication calls and moving
+cache-lines between CPUs. (Details: The kernels slab memory allocator is also
+challenged as the per-CPU slab caches loose their effect).
 ** Issue wrong RSS with Q-in-Q
 
 When the NIC hardware parser doesn't recognise a protocol, then it cannot
@@ -294,21 +265,58 @@ seems to break on many common NICs. The standard is called IEEE 802.1ad and
 informally known as Q-in-Q (incorporated into 802.1Q in 2011).
 
 Practical Q-in-Q RSS issues have been seen with NIC driver ixgbe and i40e.
+** What makes XDP_REDIRECT special?
 
+The XDP_REDIRECT verdict is different, because it can queue XDP frame
+(xdp_frame) objects into a BPF-map. All the other verdicts need to take
+immediate action, because the (xdp_buff) data-structure that keeps track
+packet-data is not-allocated anywhere, it is simply a variable on the
+function call itself.
 
-* Future development
+It is essential for performance to avoid per-packet allocations. When
+XDP-redirecting the xdp_buff object is converted into a xdp_frame object to
+allow queuing this object. To avoid any memory allocations, the xdp_frame
+object is placed in the top headroom of the data-packet itself. (Details: A
+CPU prefetch operation, runs before the XDP BPF-prog, which hides the
+overhead of writing into this cache-line).
 
-In order to fill the gap with the "skb" scenario, we need to extend CPU maps
-(and in general XDP) with JUMBO frames support and leverage on GRO code-path
-available in the networking stack. No worries, we are already working on
-it!!
+The XDP BPF-prog returns action XDP_REDIRECT, but prior to this it have
+called one of these two BPF-helpers, to describe the redirect *destination*
+where the frame should be redirected to:
 
+- =bpf_redirect(ifindex, flags)=
+- =bpf_redirect_map(bpf_map, index_key, flags)=
+
+The first helper is simply choosing the Linux net device destination via the
+ifindex as key. The second helper is the big leap that allow us to extend
+XDP-redirect. This helper can redirect into a BPF-map with at a specific
+index_key. This flexibility can be used for CPU steering.
+
+The ability to bulk is important for performance. The map-redirect is
+responsible for creating a bulk effect, as drivers are required to call a
+xdp_flush operation when NAPI-poll budget ends. The design allows the
+individual map-type implementation to control the level of bulking. More
+details later on how this is used to mitigate the overhead of cross-CPU
+communication.
+
+** Efficient transfer between CPUs
+
+The CPUMAP entry represents a Multi-Producer Single-Consumer (MPSC) queue
+(implemented via kernel provided ptr_ring). The Single-Consumer is the
+kthread that can access the (ptr_ring) queue without taking any lock.
+It also tries to bulk dequeue 8 xdp-frame objects as this represent one cache-line.
+The Multi-Producer's can be RX IRQ-line CPUs queuing up packets simultaneous for
+the remote-CPU. To avoid queue lock-contention there is (per map-entry) a
+small 8 object per-CPU allocated store for producer CPUs to generate bulk
+enqueue into the cross-CPU queue. This careful queue usage means that each
+cache-line moving cross-CPU transfer 8 frames.
 
 * Additional Resources
-- [1] https://www.kernel.org/doc/html/latest/networking/scaling.html
-- [2] https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130
+
+- [1] https://elixir.bootlin.com/linux/v5.10-rc2/source/include/uapi/linux/bpf.h#L130
+- [2] https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702">https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702
 - [3] http://espressobin.net/
-- [4] https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702">https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9216477449f33cdbc9c9a99d49f500b7fbb81702
+- [4] https://www.kernel.org/doc/html/latest/networking/scaling.html
 
 * Acronyms
 
